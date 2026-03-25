@@ -5,7 +5,7 @@ namespace GEData;
 use Exception;
 
 
-date_default_timezone_set("Asia/Shanghai");
+
 const SDK_VERSION = '1.0.0';
 const SDK_LIB_NAME = 'php';
 const TRACK_TYPE_NORMAL = 'track';
@@ -155,9 +155,7 @@ class GEAnalytics
 
     /**
      * Delete a user, This operation cannot be undone
-     * @param $client_id
-     * @param $account_id
-     * @param $properties
+     * @param string $client_id distinct ID
      * @return mixed
      * @throws Exception exception
      */
@@ -188,7 +186,7 @@ class GEAnalytics
     private function checkEventName($eventName)
     {
         if ($this->isStrict() && (!is_string($eventName) || empty($eventName))) {
-            throw new GEDataException("event name is not be empty");
+            throw new GEDataException("event name must not be empty");
         }
     }
 
@@ -314,7 +312,7 @@ abstract class GEAbstractConsumer
 
 
 /**
- * upload data to TE by http. not support multiple thread
+ * Upload data to server by HTTP. Does not support multi-threading.
  */
 class GEBatchConsumer extends GEAbstractConsumer
 {
@@ -327,6 +325,7 @@ class GEBatchConsumer extends GEAbstractConsumer
     private $isThrowException = false;
     private $cacheBuffers;
     private $cacheCapacity;
+    private $verifySSL;
 
     /**
      * init BatchConsumer
@@ -335,9 +334,10 @@ class GEBatchConsumer extends GEAbstractConsumer
      * @param int $retryTimes : retry times, default 3
      * @param int $request_timeout : http timeout, default 5s
      * @param int $cache_capacity : Multiple of $max_size, It determines the cache size
+     * @param bool $verify_ssl : Whether to verify SSL certificates, default true
      * @throws GEDataException
      */
-    function __construct($server_url, $max_size = 20, $retryTimes = 3, $request_timeout = 5, $cache_capacity = 50)
+    function __construct($server_url, $max_size = 20, $retryTimes = 3, $request_timeout = 5, $cache_capacity = 50, $verify_ssl = true)
     {
         GELog::log("Batch consumer init success. receiverUrl:" . $server_url);
 
@@ -349,6 +349,7 @@ class GEBatchConsumer extends GEAbstractConsumer
         $this->cacheCapacity = $cache_capacity;
         $this->url = $server_url;
         $this->strict = false;
+        $this->verifySSL = $verify_ssl;
     }
 
     /**
@@ -391,7 +392,7 @@ class GEBatchConsumer extends GEAbstractConsumer
         if (empty($this->buffers) && empty($this->cacheBuffers)) {
             return true;
         }
-        if ($flag || count($this->buffers) >= $this->maxSize || count($this->cacheBuffers) == 0) {
+        if (!empty($this->buffers)) {
             $sendBuffers = $this->buffers;
             $this->buffers = array();
             $this->cacheBuffers[] = $sendBuffers;
@@ -436,6 +437,7 @@ class GEBatchConsumer extends GEAbstractConsumer
     {
         $this->flush(true);
         GELog::log("Batch consumer close");
+        return true;
     }
 
     public function setCompress($compress = true)
@@ -496,46 +498,53 @@ class GEBatchConsumer extends GEAbstractConsumer
                 $data = json_encode($batch);
             }
             $compressType = $this->compress ? "gzip" : "none";
+            $contentType = $this->compress ? "application/gzip" : "application/json";
             curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
             //headers
-            curl_setopt($ch, CURLOPT_HTTPHEADER, array("GE-Integration-Type:PHP", "GE-Integration-Version:" . SDK_VERSION,
-                "GE-Integration-Count:" . count($batch), "Gravity-Content-Compress:" . $compressType,));
+            curl_setopt($ch, CURLOPT_HTTPHEADER, array("Content-Type:" . $contentType, "GE-Integration-Type:PHP", "GE-Integration-Version:" . SDK_VERSION,
+                "GE-Integration-Count:" . count($event_list), "Gravity-Content-Compress:" . $compressType,));
 
             //https
             $pos = strpos($this->url, "https");
             if ($pos === 0) {
-                curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-                curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+                if (!$this->verifySSL) {
+                    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
+                    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+                } else {
+                    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+                    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+                }
             }
 
             // send request
-            $curreyRetryTimes = 0;
-            while ($curreyRetryTimes++ < $this->retryTimes) {
+            $currentRetryTimes = 0;
+            while ($currentRetryTimes++ < $this->retryTimes) {
                 $result = curl_exec($ch);
                 GELog::log("Send data, response: $result");
 
                 if (!$result) {
-                    echo new GEDataNetWorkException("Cannot post message to server , error --> " . curl_error(($ch)));
+                    GELog::log("Cannot post message to server, error --> " . curl_error($ch));
                     continue;
                 }
                 // parse data
                 $json = json_decode($result, true);
-                GELog::log("Send data, response: $json");
+                GELog::log("Send data, response: " . json_encode($json));
 
                 $curl_info = curl_getinfo($ch);
 
-                curl_close($ch);
                 if ($curl_info['http_code'] == 200) {
+                    curl_close($ch);
                     if ($json['code'] == 0) {
                         return;
                     } else {
-                        GELog::log("Unexpected Return Code:" . $json['extra'] . " for: " . $message_array);
+                        GELog::log("Unexpected Return Code:" . $json['extra'] . " for: " . json_encode($message_array));
                         throw new GEDataException(print_r($json, true));
                     }
                 } else {
-                    echo new GEDataNetWorkException("failed, http_code: " . $curl_info['http_code']);
+                    GELog::log("Request failed, http_code: " . $curl_info['http_code']);
                 }
             }
+            curl_close($ch);
             throw new GEDataNetWorkException("retry " . $this->retryTimes . " times, but failed!");
 
         }
@@ -594,6 +603,7 @@ class GEDebugConsumer extends GEAbstractConsumer
 
     public function close()
     {
+        return true;
     }
 
     /**
@@ -614,12 +624,13 @@ class GEDebugConsumer extends GEAbstractConsumer
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, 1);
         curl_setopt($ch, CURLOPT_TIMEOUT, $this->requestTimeout);
         curl_setopt($ch, CURLOPT_POSTFIELDS, $data);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, array("Content-Type:application/json"));
 
         //https
         $pos = strpos($this->url, "https");
         if ($pos === 0) {
-            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, false);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
         }
 
         $result = curl_exec($ch);
@@ -627,7 +638,9 @@ class GEDebugConsumer extends GEAbstractConsumer
 
 
         if (!$result) {
-            throw new GEDataNetWorkException("Cannot post message to server , error -->" . curl_error(($ch)));
+            $error = curl_error($ch);
+            curl_close($ch);
+            throw new GEDataNetWorkException("Cannot post message to server, error --> " . $error);
         }
 
         // parse data
