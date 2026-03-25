@@ -12,6 +12,8 @@ use GEData\GEDebugConsumer;
 use GEData\GELog;
 
 
+// Replace with your actual server URL. It's recommended to use environment variables:
+// $serverUrl = getenv('GE_SERVER_URL');
 const SERVER_URL = 'https://backend.gravity-engine.com/event_center/api/v1/event/collect/?access_token=__XXX__';
 
 /**
@@ -33,7 +35,7 @@ function get_debug_sdk()
     try {
         GELog::$enable = true;
         $debugConsumer = new GEDebugConsumer(SERVER_URL, 1000,);
-        return new GEAnalytics($debugConsumer, true);
+        return new GEAnalytics($debugConsumer);
     } catch (GEDataException $e) {
         echo $e;
         return null;
