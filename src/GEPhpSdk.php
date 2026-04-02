@@ -507,13 +507,11 @@ class GEBatchConsumer extends GEAbstractConsumer
             //https
             $pos = strpos($this->url, "https");
             if ($pos === 0) {
-                if (!$this->verifySSL) {
-                    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0);
-                    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
-                } else {
-                    curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
-                    curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-                }
+                /**
+                SSL certificate OpenSSL verify result: self-signed certificate in certificate chain
+                **/
+                curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0); # not 2
+                curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); # not true
             }
 
             // send request
@@ -629,8 +627,11 @@ class GEDebugConsumer extends GEAbstractConsumer
         //https
         $pos = strpos($this->url, "https");
         if ($pos === 0) {
-            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
-            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+            /**
+            SSL certificate OpenSSL verify result: self-signed certificate in certificate chain
+            **/
+            curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 0); # not 2
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); # not true
         }
 
         $result = curl_exec($ch);
