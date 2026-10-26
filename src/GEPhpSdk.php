@@ -326,6 +326,10 @@ class GEBatchConsumer extends GEAbstractConsumer
     private $cacheBuffers;
     private $cacheCapacity;
     private $verifySSL;
+    /**
+     * @var callable|null global error callback, invoked when report failed; receives ($err, $client_id)
+     */
+    private $callback;
 
     /**
      * init BatchConsumer
@@ -335,9 +339,10 @@ class GEBatchConsumer extends GEAbstractConsumer
      * @param int $request_timeout : http timeout, default 5s
      * @param int $cache_capacity : Multiple of $max_size, It determines the cache size
      * @param bool $verify_ssl : Whether to verify SSL certificates, default true
+     * @param callable|null $callback : global error callback, invoked when report failed; receives ($err, $client_id)
      * @throws GEDataException
      */
-    function __construct($server_url, $max_size = 20, $retryTimes = 3, $request_timeout = 5, $cache_capacity = 50, $verify_ssl = true)
+    function __construct($server_url, $max_size = 20, $retryTimes = 3, $request_timeout = 5, $cache_capacity = 50, $verify_ssl = true, $callback = null)
     {
         GELog::log("Batch consumer init success. receiverUrl:" . $server_url);
 
@@ -350,6 +355,7 @@ class GEBatchConsumer extends GEAbstractConsumer
         $this->url = $server_url;
         $this->strict = false;
         $this->verifySSL = $verify_ssl;
+        $this->callback = $callback;
     }
 
     /**
@@ -536,18 +542,39 @@ class GEBatchConsumer extends GEAbstractConsumer
                         return;
                     } else {
                         GELog::log("Unexpected Return Code:" . $json['extra'] . " for: " . json_encode($message_array));
-                        throw new GEDataException(print_r($json, true));
+                        $e = new GEDataException(print_r($json, true));
+                        $this->reportError($e, $client_id);
+                        throw $e;
                     }
                 } else {
                     GELog::log("Request failed, http_code: " . $curl_info['http_code']);
                 }
             }
             curl_close($ch);
-            throw new GEDataNetWorkException("retry " . $this->retryTimes . " times, but failed!");
+            $e = new GEDataNetWorkException("retry " . $this->retryTimes . " times, but failed!");
+            $this->reportError($e, $client_id);
+            throw $e;
 
         }
 
 
+    }
+
+    /**
+     * Invoke the global error callback when report failed
+     * @param Exception $err error
+     * @param string|null $client_id client_id of the failed report
+     */
+    private function reportError($err, $client_id)
+    {
+        if ($this->callback === null) {
+            return;
+        }
+        try {
+            call_user_func($this->callback, $err, $client_id);
+        } catch (Exception $e) {
+            GELog::log("error callback failed: " . $e->getMessage());
+        }
     }
 }
 
@@ -567,14 +594,19 @@ class GEDebugConsumer extends GEAbstractConsumer
 {
     private $url;
     private $requestTimeout;
+    /**
+     * @var callable|null global error callback, invoked when report failed; receives ($err, $client_id)
+     */
+    private $callback;
 
     /**
      * init DebugConsumer
      * @param string $server_url server url
      * @param int $request_timeout http timeout, default 5s
+     * @param callable|null $callback global error callback, invoked when report failed; receives ($err, $client_id)
      * @throws GEDataException
      */
-    function __construct($server_url, $request_timeout = 5)
+    function __construct($server_url, $request_timeout = 5, $callback = null)
     {
         GELog::log("Debug consumer init success.  receiverUrl:" . $server_url);
 
@@ -587,6 +619,7 @@ class GEDebugConsumer extends GEAbstractConsumer
 
         $this->requestTimeout = $request_timeout;
         $this->strict = true;
+        $this->callback = $callback;
     }
 
     /**
@@ -611,6 +644,9 @@ class GEDebugConsumer extends GEAbstractConsumer
     private function doRequest($message)
     {
         GELog::log("Send data, request: $message");
+
+        $decoded = json_decode($message, true);
+        $client_id = is_array($decoded) && isset($decoded['client_id']) ? $decoded['client_id'] : null;
 
         $ch = curl_init($this->url);
         $data = $message;
@@ -641,7 +677,9 @@ class GEDebugConsumer extends GEAbstractConsumer
         if (!$result) {
             $error = curl_error($ch);
             curl_close($ch);
-            throw new GEDataNetWorkException("Cannot post message to server, error --> " . $error);
+            $e = new GEDataNetWorkException("Cannot post message to server, error --> " . $error);
+            $this->reportError($e, $client_id);
+            throw $e;
         }
 
         // parse data
@@ -655,10 +693,31 @@ class GEDebugConsumer extends GEAbstractConsumer
                 return true;
             } else {
                 GELog::log("Unexpected Return Code:" . $json['extra'] . " for: " . $message);
-                throw new GEDataException(print_r($json, true));
+                $e = new GEDataException(print_r($json, true));
+                $this->reportError($e, $client_id);
+                throw $e;
             }
         } else {
-            throw new GEDataNetWorkException("failed. HTTP code: " . $curl_info['http_code'] . "\t return content :" . $result);
+            $e = new GEDataNetWorkException("failed. HTTP code: " . $curl_info['http_code'] . "\t return content :" . $result);
+            $this->reportError($e, $client_id);
+            throw $e;
+        }
+    }
+
+    /**
+     * Invoke the global error callback when report failed
+     * @param Exception $err error
+     * @param string|null $client_id client_id of the failed report
+     */
+    private function reportError($err, $client_id)
+    {
+        if ($this->callback === null) {
+            return;
+        }
+        try {
+            call_user_func($this->callback, $err, $client_id);
+        } catch (Exception $e) {
+            GELog::log("error callback failed: " . $e->getMessage());
         }
     }
 }
